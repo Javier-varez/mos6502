@@ -123,6 +123,5 @@ mod tests {
 
         assert_eq!(cpu.registers.program_counter, 0x3412);
         assert_eq!(cpu.registers.accumulator, 0);
-        assert_eq!(cpu.registers.stack_pointer, 0xFF);
     }
 }

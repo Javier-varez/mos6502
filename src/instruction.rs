@@ -2,6 +2,7 @@
 use crate::bus::Bus;
 use crate::registers::Registers;
 use crate::registers::StatusRegister;
+use crate::registers::Stack;
 use crate::addressing_modes::Operand;
 
 #[derive(Copy, Clone)]
@@ -104,15 +105,76 @@ impl Instruction {
             Instruction::Asl => self.arithmetic_shift_left(operand, bus, regs),
             Instruction::Rol => self.rotate_left(operand, bus, regs),
             Instruction::Ror => self.rotate_right(operand, bus, regs),
-            _ => {}
+
+            // Jump instructions
+            Instruction::Jmp => self.jump(operand, regs),
+
+            // Branch instructions
+            Instruction::Bcs => if regs.status_reg.carry { self.jump(operand, regs) },
+            Instruction::Bcc => if !regs.status_reg.carry { self.jump(operand, regs) },
+            Instruction::Beq => if regs.status_reg.zero { self.jump(operand, regs) },
+            Instruction::Bne => if !regs.status_reg.zero { self.jump(operand, regs) },
+            Instruction::Bmi => if regs.status_reg.negative { self.jump(operand, regs) },
+            Instruction::Bpl => if !regs.status_reg.negative { self.jump(operand, regs) },
+            Instruction::Bvs => if regs.status_reg.overflow { self.jump(operand, regs) },
+            Instruction::Bvc => if !regs.status_reg.overflow { self.jump(operand, regs) },
+
+            // Subroutine instructions
+            Instruction::Jsr => {
+                self.push_pc(regs.program_counter, &mut regs.stack, bus);
+                self.jump(operand, regs);
+            },
+            Instruction::Rts => {
+                let pc = self.pop_pc(&mut regs.stack, bus);
+                self.jump(Operand::Addr(pc), regs);
+            },
+
+            // Interrupt instructions
+            Instruction::Brk => { panic!("Unimplemented Brk"); },
+            Instruction::Rti => { panic!("Unimplemented Rti"); },
+
+            // Memory transfer operations
+            Instruction::Lda => self.load_register(operand, bus, &mut regs.status_reg, &mut regs.accumulator),
+            Instruction::Ldx => self.load_register(operand, bus, &mut regs.status_reg, &mut regs.x_index),
+            Instruction::Ldy => self.load_register(operand, bus, &mut regs.status_reg, &mut regs.y_index),
+            Instruction::Sta => self.store_register(operand, bus, regs.accumulator),
+            Instruction::Stx => self.store_register(operand, bus, regs.x_index),
+            Instruction::Sty => self.store_register(operand, bus, regs.y_index),
+
+            // Register data transfer operations
+            Instruction::Tax => regs.x_index = regs.accumulator,
+            Instruction::Txa => regs.accumulator = regs.x_index,
+            Instruction::Tay => regs.y_index = regs.accumulator,
+            Instruction::Tya => regs.accumulator = regs.y_index,
+            Instruction::Txs => regs.x_index = regs.stack.get(),
+            Instruction::Tsx => regs.stack.set(regs.x_index),
+
+            // Stack operations
+            Instruction::Pha => regs.stack.push(regs.accumulator, bus),
+            Instruction::Pla => regs.accumulator = regs.stack.pop(bus),
+            Instruction::Php => regs.stack.push(regs.status_reg.get(), bus),
+            Instruction::Plp => regs.status_reg.set(regs.stack.pop(bus)),
         }
+    }
+
+    fn push_pc<T: Bus>(&self, pc: u16, stack: &mut Stack, bus: &mut T) {
+        let hi = (pc >> 8) as u8;
+        stack.push(hi, bus);
+        let lo = (pc & 0xFF) as u8;
+        stack.push(lo, bus);
+    }
+
+    fn pop_pc<T: Bus>(&self, stack: &mut Stack, bus: &mut T) -> u16 {
+        let lo = stack.pop(bus) as u16;
+        let hi = stack.pop(bus) as u16;
+        (hi << 8) | lo
     }
 
     fn and<T: Bus>(&self, operand: Operand, bus: &mut T, regs: &mut Registers) {
         let value = match operand {
             Operand::Value(val) => val,
             Operand::Addr(addr) => bus.read(addr),
-            Operand::None => { panic!("AND requires an argument!"); }
+            Operand::None | Operand::Accumulator => { panic!("AND requires an argument!"); }
         };
 
         regs.accumulator &= value;
@@ -124,7 +186,7 @@ impl Instruction {
         let argument = match operand {
             Operand::Value(val) => val,
             Operand::Addr(addr) => bus.read(addr),
-            Operand::None => { panic!("No argument for ORA!" ) }
+            Operand::None | Operand::Accumulator => { panic!("No argument for ORA!" ) }
         };
 
         regs.accumulator |= argument;
@@ -136,7 +198,7 @@ impl Instruction {
         let argument = match operand {
             Operand::Value(val) => val,
             Operand::Addr(addr) => bus.read(addr),
-            Operand::None => { panic!("No argument for ORA!" ) }
+            Operand::None | Operand::Accumulator => { panic!("No argument for ORA!" ) }
         };
 
         regs.accumulator ^= argument;
@@ -148,7 +210,7 @@ impl Instruction {
         let argument = match operand {
             Operand::Value(val) => val,
             Operand::Addr(addr) => bus.read(addr),
-            Operand::None => { panic!("No argument for ORA!" ) }
+            Operand::None | Operand::Accumulator => { panic!("No argument for ORA!" ) }
         };
 
         regs.status_reg.negative = (val.wrapping_sub(argument) & 0x80) != 0;
@@ -160,7 +222,7 @@ impl Instruction {
         let argument = match operand {
             Operand::Value(val) => val,
             Operand::Addr(addr) => bus.read(addr),
-            Operand::None => { panic!("No argument for bit"); }
+            Operand::None | Operand::Accumulator => { panic!("No argument for bit"); }
         };
 
         regs.status_reg.negative = (argument & 0x80) != 0;
@@ -172,7 +234,7 @@ impl Instruction {
         let value = match operand {
             Operand::Value(val) => val,
             Operand::Addr(addr) => bus.read(addr),
-            Operand::None => { panic!("ADC requires an argument!"); }
+            Operand::None | Operand::Accumulator => { panic!("ADC requires an argument!"); }
         } as u16;
 
         if regs.status_reg.decimal_mode {
@@ -194,7 +256,7 @@ impl Instruction {
         let mut value = match operand {
             Operand::Value(val) => val,
             Operand::Addr(addr) => bus.read(addr),
-            Operand::None => { panic!("SBC requires an argument!"); }
+            Operand::None | Operand::Accumulator => { panic!("SBC requires an argument!"); }
         } as u16;
 
         if regs.status_reg.decimal_mode {
@@ -267,12 +329,12 @@ impl Instruction {
                 shift_op(&mut regs.status_reg, &mut val);
                 bus.write(addr, val);
             }
-            Operand::Value(_val) => {
+            Operand::Accumulator => {
                 let mut val = regs.accumulator;
                 shift_op(&mut regs.status_reg, &mut val);
                 regs.accumulator = val;
             },
-            Operand::None => { panic!("Invalid operand None for LSR"); }
+            Operand::None | Operand::Value(_) => { panic!("Invalid operand None for LSR"); }
         };
     }
 
@@ -290,12 +352,12 @@ impl Instruction {
                 shift_op(&mut val, regs);
                 bus.write(addr, val);
             }
-            Operand::Value(_val) => {
+            Operand::Accumulator => {
                 let mut val = regs.accumulator;
                 shift_op(&mut val, regs);
                 regs.accumulator = val;
             },
-            Operand::None => { panic!("Invalid operand None for ASL"); }
+            Operand::None | Operand::Value(_) => { panic!("Invalid operand None for ASL"); }
         };
     }
 
@@ -317,12 +379,12 @@ impl Instruction {
                 shift_op(&mut val, regs);
                 bus.write(addr, val);
             }
-            Operand::Value(_val) => {
+            Operand::Accumulator => {
                 let mut val = regs.accumulator;
                 shift_op(&mut val, regs);
                 regs.accumulator = val;
             },
-            Operand::None => { panic!("Invalid operand None for ROL"); }
+            Operand::None | Operand::Value(_) => { panic!("Invalid operand None for ROL"); }
         };
     }
 
@@ -344,13 +406,39 @@ impl Instruction {
                 shift_op(&mut val, regs);
                 bus.write(addr, val);
             }
-            Operand::Value(_val) => {
+            Operand::Accumulator => {
                 let mut val = regs.accumulator;
                 shift_op(&mut val, regs);
                 regs.accumulator = val;
             },
-            Operand::None => { panic!("Invalid operand None for ROL"); }
+            Operand::None | Operand::Value(_) => { panic!("Invalid operand None for ROL"); }
         };
+    }
+
+    fn jump(&self, operand: Operand, regs: &mut Registers) {
+        if let Operand::Addr(addr) = operand {
+            regs.program_counter = addr;
+        } else {
+            panic!("jump called with invalid operand");
+        }
+    }
+
+    fn load_register<T: Bus>(&self, operand: Operand, bus: &mut T, status_reg: &mut StatusRegister, reg: &mut u8) {
+        *reg = match operand {
+            Operand::Value(value) => value,
+            Operand::Addr(addr) => bus.read(addr),
+            Operand::Accumulator | Operand::None => { panic!("LD: invalid operand"); }
+        };
+        status_reg.negative = (*reg & 0x80) != 0;
+        status_reg.zero = *reg == 0;
+    }
+
+    fn store_register<T: Bus>(&self, operand: Operand, bus: &mut T, reg: u8) {
+        if let Operand::Addr(addr) = operand {
+            bus.write(addr, reg);
+        } else {
+            panic!("Store operation: Invalid operand");
+        }
     }
 }
 

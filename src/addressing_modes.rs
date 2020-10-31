@@ -23,6 +23,7 @@ pub enum AddressingMode {
 pub enum Operand {
     Addr(u16),
     Value(u8),
+    Accumulator,
     None
 }
 
@@ -30,7 +31,7 @@ impl AddressingMode {
     pub fn get_operand<T: Bus>(&self, bus: &mut T, regs: &mut Registers) -> Operand {
         match self {
             AddressingMode::Accumulator => {
-                Operand::Value(regs.accumulator)
+                Operand::Accumulator
             },
             AddressingMode::Absolute => {
                 Operand::Addr(self.get_absolute_address(bus, regs))
